@@ -1,323 +1,216 @@
-# Building OpenCode Termux ARM 32 Locally
+# Local ARMv7/ARM32 build guide for this repo
 
-## Overview
+## Important reality check
 
-Building ARM 32 architecture binaries directly on Termux is recommended when GitHub Actions runners don't support this architecture or face compatibility issues. This guide provides step-by-step instructions for setting up your local Termux environment and building the project.
+This repository is not a generic C/C++ project that builds with a single `cmake .. && make` flow. The actual source tree is a Termux packaging + binary transplant pipeline for Android/Bionic.
 
----
+The repo itself explicitly contains:
 
-## Prerequisites
+- patching for Android support in `patches/0001-android-support.patch`
+- Termux CWD fixes in `patches/0002-bun-termux-cwd-fix.patch`
+- transplant/build tooling under `tools/transplant/`
+- Make targets that produce the patched native binary, including:
+  - `make transplant VER=<version>`
+  - `make family-native VER=<version>`
+  - `make family-compressed VER=<version>`
+  - `make seccomp-harden VER=<version>`
 
-### System Requirements
+This is the real path the repo uses for native Android builds.
 
-- **Device**: ARM 32-bit Android device or emulator
-- **Termux**: Latest version from [F-Droid](https://f-droid.org/packages/com.termux/) or [GitHub Releases](https://github.com/termux/termux-app/releases)
-- **Storage**: At least 2-3 GB free space for dependencies and builds
-- **RAM**: Minimum 2 GB recommended
+At the same time, the repo docs state that ARMv7/arm32 work is deferred/non-mainline:
 
-### Permissions
+- `docs/README.md` says: `arm32 and broader armv7 portability implementation work is deferred/non-mainline unless explicitly promoted.`
 
-After installing Termux:
-```bash
-termux-setup-storage
-```
-
-This grants Termux access to your device's storage.
-
----
-
-## Step 1: Update Termux
-
-Update the package repository:
-
-```bash
-pkg update
-pkg upgrade -y
-```
+So: local building is valid if you are doing a targeted experimental/fallback armv7/arm32 build, but it is not the standard mainline packaging flow.
 
 ---
 
-## Step 2: Install Required Build Tools
+## What the repo is actually building
 
-### Essential Tools
+The repo's mainline path is the Android/Bionic transplant pipeline, not a straight `make` from the upstream source tree.
+
+Relevant files:
+
+- `Makefile` — orchestrates `transplant`, `libopentui`, `seccomp-harden`, `transplant-upx`
+- `patches/README.md` — explains the Android patch flow
+- `docs/ci-prebuild-armv7.md` — documents armv7 cross-build / native fallback attempts
+- `docs/armv7-native-runner-setup.md` — explains self-hosted armv7 runner setup for CI fallback
+
+This means the binary needing patching is the upstream OpenCode runtime binary after it is transplanted onto Android/Bionic, not a generic binary produced by a trivial CMake build.
+
+---
+
+## Recommended local workflow for ARMv7/ARM32
+
+### 1) Use a real ARMv7/arm32 host if possible
+
+For ARMv7/arm32, the repo expects a real native environment or a self-hosted runner, per `docs/armv7-native-runner-setup.md`.
+
+Check architecture:
 
 ```bash
-pkg install -y \
-    build-essential \
-    git \
-    cmake \
-    pkg-config \
-    clang \
-    binutils
+uname -m
+file /bin/sh
 ```
 
-### Language-Specific Tools
+Expected output should look like:
 
-Depending on your project, install relevant toolchains:
-
-**For C/C++ Projects:**
 ```bash
-pkg install -y \
-    gcc \
-    g++ \
-    gdb \
-    make
+armv7l
+ELF 32-bit LSB executable, ARM ...
 ```
 
-**For Node.js Projects:**
+If you are on Android/Termux, the environment is only a realistic fallback for experimenting, not the canonical release path.
+
+---
+
+### 2) Install build dependencies
+
+In Termux:
+
 ```bash
-pkg install -y nodejs npm
-npm install -g npm
+pkg update && pkg upgrade -y
+pkg install -y git curl ca-certificates build-essential cmake ninja python pkg-config clang llvm rustup nodejs npm
 ```
 
-**For Python Projects:**
-```bash
-pkg install -y python python-pip
-pip install --upgrade pip
-```
+Optional but useful:
 
-**For Rust Projects:**
 ```bash
-pkg install -y rustup
-rustup default stable
-```
-
-### Additional Dependencies
-
-Check if your project requires:
-```bash
-pkg install -y \
-    openssl-dev \
-    curl-dev \
-    zlib-dev \
-    readline-dev
+pkg install -y ccache upx
 ```
 
 ---
 
-## Step 3: Clone the Repository
+### 3) Clone repo and inspect the actual build targets
 
 ```bash
-cd ~
 git clone https://github.com/prexhgaming/opencode-termux.git
 cd opencode-termux
 ```
 
----
-
-## Step 4: Build the Project
-
-### Option A: Using CMake (Recommended for C/C++)
+Then inspect the Makefile targets:
 
 ```bash
-mkdir -p build
-cd build
-cmake ..
-make -j$(nproc)
+make help | sed -n '1,120p'
 ```
 
-### Option B: Using Make
+The important targets are:
 
 ```bash
-make -j$(nproc)
-```
-
-### Option C: Using Custom Build Script
-
-If a build script exists in the repository:
-
-```bash
-bash ./build.sh
-# or
-python build.py
-```
-
-Check `README.md` in the repository for specific build instructions.
-
----
-
-## Step 5: Verify the Build
-
-After compilation completes:
-
-```bash
-# Check if binaries were created
-ls -la build/  # or appropriate output directory
-
-# Run basic tests if available
-make test
-# or
-./build/your-binary-name --version
+make transplant VER=<version>
+make family-native VER=<version>
+make family-compressed VER=<version>
 ```
 
 ---
 
-## Step 6: Create Build Artifacts
+### 4) Build the native Android binary using the repo's transplant pipeline
 
-### For CI/CD Integration
-
-Create a tar archive of the compiled binaries:
+For a specific version (example):
 
 ```bash
-cd ~/opencode-termux
-tar -czf opencode-termux-arm32-build.tar.gz build/
+make transplant VER=2.0.0
 ```
 
-### Upload to Storage
+This is the key repo-native build path. It performs the transplant, libopentui patching, and seccomp hardening workflow.
 
-To move artifacts to your device storage:
+For native packages after transplant:
 
 ```bash
-cp opencode-termux-arm32-build.tar.gz ~/storage/downloads/
+make family-native VER=2.0.0
 ```
 
----
+This produces packaging artifacts with the patched runtime.
 
-## Troubleshooting
+If you are testing the compressed packaging line:
 
-### Issue: Out of Memory
-
-**Solution:**
-- Build with fewer parallel jobs:
-  ```bash
-  make -j2
-  ```
-- Kill unnecessary processes:
-  ```bash
-  ps aux | grep -v grep | awk '{print $2}' | xargs kill -9
-  ```
-
-### Issue: Missing Dependencies
-
-**Solution:**
-- Search for available packages:
-  ```bash
-  pkg search <package-name>
-  ```
-- Install missing development headers:
-  ```bash
-  pkg install -y <package-name>-dev
-  ```
-
-### Issue: Compilation Errors
-
-**Solution:**
-1. Check the error message carefully
-2. Ensure all dependencies are installed
-3. Try cleaning the build directory:
-   ```bash
-   rm -rf build/
-   mkdir build
-   cd build
-   cmake ..
-   make
-   ```
-
-### Issue: Permission Denied
-
-**Solution:**
 ```bash
-# Grant execution permissions
-chmod +x ./build/binary-name
-
-# Or make entire directory executable
-chmod -R +x ./build/
+make family-compressed VER=2.0.0
 ```
 
 ---
 
-## Performance Tips
+### 5) Verify the result
 
-1. **Use Release Build:**
-   ```bash
-   cmake -DCMAKE_BUILD_TYPE=Release ..
-   make
-   ```
-
-2. **Parallel Compilation:**
-   ```bash
-   make -j$(nproc)
-   ```
-   This uses all available CPU cores.
-
-3. **Ccache for Faster Rebuilds:**
-   ```bash
-   pkg install -y ccache
-   export CC="ccache gcc"
-   export CXX="ccache g++"
-   ```
-
-4. **Monitor Resources:**
-   ```bash
-   # Install htop for system monitoring
-   pkg install -y htop
-   htop
-   ```
-
----
-
-## Continuous Building
-
-For development workflows, automate rebuilds:
+Check generated artifacts:
 
 ```bash
-#!/bin/bash
-# save as rebuild.sh
-
-cd ~/opencode-termux
-while true; do
-    git pull
-    rm -rf build/
-    mkdir build
-    cd build
-    cmake ..
-    make -j$(nproc)
-    cd ..
-    echo "Build completed at $(date)"
-    sleep 3600  # Rebuild every hour
-done
+find artifacts -maxdepth 4 -type f | sort | tail -n 50
 ```
 
-Run in background:
+Or package output:
+
 ```bash
-nohup bash rebuild.sh > build.log 2>&1 &
+find packing -maxdepth 4 -type f | sort | tail -n 50
+```
+
+Check the binary type:
+
+```bash
+file artifacts/transplant/<ver>/opencode-native
+```
+
+For ARMv7/arm32 the expected signal is:
+
+```bash
+ELF 32-bit LSB executable, ARM ...
 ```
 
 ---
 
-## Next Steps
+## Extra ARMv7/arm32 debug workflow from the repo
 
-### Publish Builds
+The repo includes a dedicated fallback path for armv7 native builds:
 
-1. **GitHub Releases:**
-   - Upload tar archive to GitHub Releases
-   - Create CI/CD workflow for automated uploads
+- `docs/ci-prebuild-armv7.md`
+- `docs/armv7-native-runner-setup.md`
 
-2. **Testing:**
-   - Run unit tests: `make test`
-   - Test on multiple ARM 32 devices if possible
+That workflow is expressly designed for a real `armv7` self-hosted runner and checks:
 
-3. **Documentation:**
-   - Document any device-specific requirements
-   - Note successful build configurations
+```bash
+uname -m
+file /bin/sh
+cmake --version
+ninja --version
+python3 --version
+rustc --version || true
+cargo --version || true
+bun --version || true
+```
 
----
-
-## Additional Resources
-
-- [Termux Wiki](https://wiki.termux.com/)
-- [Termux Packages](https://packages.termux.dev/)
-- [CMake Documentation](https://cmake.org/documentation/)
-- [GNU Make Manual](https://www.gnu.org/software/make/manual/)
+If the native runner is absent, the repo treats armv7 as an attempt/fallback path, not a mainline supported package.
 
 ---
 
-## Support
+## When to build locally
 
-For issues specific to OpenCode Termux, check:
-- Repository Issues: [GitHub Issues](https://github.com/prexhgaming/opencode-termux/issues)
-- Parent Project: [Hope2333/opencode-termux](https://github.com/Hope2333/opencode-termux)
+Build locally only when:
+
+- you are debugging a failing armv7/arm32 binary
+- you need to validate a transplant patch on-device
+- you are testing the experimental fallback path before CI/self-hosted deployment
+
+Do not assume it is the normal release target. The repo explicitly labels ARMv7/arm32 as deferred/non-mainline.
 
 ---
 
-*Last updated: October 2026*
+## Bottom line
+
+The repo does cover the binaries needing patching, but the correct process is not generic `cmake` compilation. It is the repo's custom Android/Bionic transplant flow:
+
+```bash
+make transplant VER=<version>
+make family-native VER=<version>
+```
+
+If you need a true ARMv7/arm32 build, prefer a real ARMv7 host or a self-hosted runner, because the repo documents that as the supported fallback path.
+
+---
+
+## One-liner to try on Termux
+
+```bash
+pkg update && pkg upgrade -y && pkg install -y git curl ca-certificates build-essential cmake ninja python pkg-config clang llvm rustup nodejs npm && git clone https://github.com/prexhgaming/opencode-termux.git && cd opencode-termux && make transplant VER=2.0.0
+```
+
+If this fails, the likely cause is not “missing GCC”; it is that this repo's ARMv7/arm32 path is experimental and requires the actual transplant/patch toolchain described in the project docs.
